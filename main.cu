@@ -3,6 +3,8 @@
 #include <random>
 #include <cstdlib>
 #include <fstream>
+#include <queue>
+#include <chrono>
 
 
 __global__ void calculate_distance(float* data_points, float* centroids, float* distances, int num_data_points, int num_centroids, int data_point_dim) {
@@ -37,7 +39,7 @@ __global__ void assign_cluster(int *cluster_assignment, float *distances, int nu
     cluster_assignment[data_point_id] = min_distance_centroid_id;
 }
 
-__global__ void calculate_centroid(float* data_points, int* cluster_assignment, float* centroids, int num_data_points, int num_centroids, int data_point_dim) {
+__global__ void calculate_centroid(float* data_points, int* cluster_assignment, float* centroids, float* old_centroids, int num_data_points, int num_centroids, int data_point_dim) {
     int centroid_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (centroid_id >= num_centroids) {
         return;
@@ -53,13 +55,23 @@ __global__ void calculate_centroid(float* data_points, int* cluster_assignment, 
             }
         }
         if (num_points_assigned > 0) {
+            old_centroids[centroid_id * data_point_dim + dim] = centroids[centroid_id * data_point_dim + dim];
             centroids[centroid_id * data_point_dim + dim] = sum / num_points_assigned;
         }
     }
 }
 
-void centroid_distance(float* o_centroids, float* n_centroids){
-    
+__global__ void centroid_distance(float* o_centroids, float* n_centroids, int k, int data_point_dim, float* distance){
+    int centroid_id = blockIdx.x * blockDim.x + threadIdx.x;
+    if (centroid_id >= k) {
+        return;
+    }
+    distance[centroid_id] = 0;
+    float diff;
+    for(int dim=0; dim < data_point_dim; dim++){
+            diff = o_centroids[centroid_id*data_point_dim+dim] - n_centroids[centroid_id*data_point_dim+dim];
+            distance[centroid_id] += diff * diff;
+    }
 }
 
 
@@ -101,21 +113,30 @@ void kmeans(float* data_points, float* centroids, int* cluster_assignment, int n
     initialize_centroids(data_point_dim, centroids, data_points, num_centroids, 100);
 
     // Copy data points and centroids to the GPU
-    float* d_data_points, *d_centroids, *d_distances;
+    float* d_data_points, *d_centroids, *old_centroids, *d_distances;
     int* d_cluster_assignment;
     cudaMalloc(&d_data_points, num_data_points * data_point_dim * sizeof(float));
     cudaMalloc(&d_centroids, num_centroids * data_point_dim * sizeof(float));
+    cudaMalloc(&old_centroids, num_centroids * data_point_dim * sizeof(float));
     cudaMalloc(&d_distances, num_data_points * num_centroids * sizeof(float));
     cudaMalloc(&d_cluster_assignment, num_data_points * sizeof(int));
     cudaMemcpy(d_data_points, data_points, num_data_points * data_point_dim * sizeof(float), cudaMemcpyHostToDevice);
     cudaMemcpy(d_centroids, centroids, num_centroids * data_point_dim * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(old_centroids, centroids, num_centroids * data_point_dim * sizeof(float), cudaMemcpyHostToDevice);
 
     // Main loop
     int iteration = 0;
-    while (iteration < max_iterations) {
-    // Calculate distance between each data point and centroid
-        int num_threads_per_block = 128;
-        int num_blocks = (num_data_points + num_threads_per_block - 1) / num_threads_per_block;
+    int num_threads_per_block = 256;
+    int num_blocks = (num_centroids + num_threads_per_block - 1) / num_threads_per_block;
+    float *d_centr_distance;
+    float *centr_distance = new float[num_centroids];
+    float tot_distance;
+    cudaMallocHost(&d_centr_distance, num_centroids * sizeof(float));
+
+    do {
+        // Calculate centroid_distance between each data point and centroid
+
+        num_blocks = (num_data_points + num_threads_per_block - 1) / num_threads_per_block;
         calculate_distance<<<num_blocks, num_threads_per_block>>>(d_data_points, d_centroids, d_distances, num_data_points, num_centroids, data_point_dim);
 
         // Assign each data point to the nearest centroid
@@ -123,20 +144,23 @@ void kmeans(float* data_points, float* centroids, int* cluster_assignment, int n
 
         // Calculate new centroids
         num_blocks = (num_centroids + num_threads_per_block - 1) / num_threads_per_block;
-        calculate_centroid<<<num_blocks, num_threads_per_block>>>(d_data_points, d_cluster_assignment, d_centroids, num_data_points, num_centroids, data_point_dim);
+
+        calculate_centroid<<<num_blocks, num_threads_per_block>>>(d_data_points, d_cluster_assignment, d_centroids, old_centroids, num_data_points, num_centroids, data_point_dim);
 
         // Check if centroids have moved more than tolerance
-        // ...
-
+        tot_distance = 0;
+        centroid_distance<<<num_blocks, num_threads_per_block>>>(old_centroids, d_centroids, num_centroids, data_point_dim, d_centr_distance);
+        cudaMemcpy(centr_distance, d_centr_distance, num_centroids*sizeof(float), cudaMemcpyDeviceToHost);
+        for(int i=0; i<num_centroids; i++){
+            tot_distance += centr_distance[i];
+        }
         iteration++;
-    }
+    }while (iteration < max_iterations && tot_distance > tolerance);
 
-    // Copy final centroids back to CPU
+    // Copy final centroids and cluster assignment back to CPU
     cudaMemcpy(centroids, d_centroids, num_centroids * data_point_dim * sizeof(float), cudaMemcpyDeviceToHost);
-    for(int i = 0; i<4; i++){
-        std::cout << centroids[i] << "\n";
-    }
-    std::cout << "\n";
+    cudaMemcpy(cluster_assignment, d_cluster_assignment, num_data_points * sizeof(int), cudaMemcpyDeviceToHost);
+
     // Free memory on the GPU
     cudaFree(d_data_points);
     cudaFree(d_centroids);
@@ -146,7 +170,7 @@ void kmeans(float* data_points, float* centroids, int* cluster_assignment, int n
 }
 
 
-int calculate_distance_s(float* data_points, float* centroids, float* distances, int num_data_points, int num_centroids, int data_point_dim) {
+void calculate_distance_s(float* data_points, float* centroids, float* distances, int num_data_points, int num_centroids, int data_point_dim) {
     for(int data_point_id=0; data_point_id<num_data_points; data_point_id++){
         for (int centroid_id = 0; centroid_id < num_centroids; centroid_id++) {
             float distance = 0;
@@ -157,10 +181,10 @@ int calculate_distance_s(float* data_points, float* centroids, float* distances,
             distances[data_point_id * num_centroids + centroid_id] = distance;
         }
     }
-    return 1;
+
 }
 
-int assign_cluster_s(int *cluster_assignment, float *distances, int num_data_points, int num_centroids) {
+void assign_cluster_s(int *cluster_assignment, float *distances, int num_data_points, int num_centroids) {
     for(int data_point_id=0; data_point_id<num_data_points; data_point_id++){
         int min_distance_centroid_id = 0;
         float min_distance = distances[data_point_id * num_centroids];
@@ -173,10 +197,9 @@ int assign_cluster_s(int *cluster_assignment, float *distances, int num_data_poi
         }
         cluster_assignment[data_point_id] = min_distance_centroid_id;
     }
-    return 2;
 }
 
-int calculate_centroid_s(float* data_points, int* cluster_assignment, float* centroids, int num_data_points, int num_centroids, int data_point_dim) {
+void calculate_centroid_s(float* data_points, int* cluster_assignment, float* centroids, float* old_centroids, int num_data_points, int num_centroids, int data_point_dim) {
     for(int centroid_id=0; centroid_id<num_centroids; centroid_id++){
         for (int dim = 0; dim < data_point_dim; dim++) {
             int num_points_assigned = 0;
@@ -188,41 +211,52 @@ int calculate_centroid_s(float* data_points, int* cluster_assignment, float* cen
                 }
             }
             if (num_points_assigned > 0) {
+                old_centroids[centroid_id * data_point_dim + dim] = centroids[centroid_id * data_point_dim + dim];
                 centroids[centroid_id * data_point_dim + dim] = sum / num_points_assigned;
             }
         }
     }
-    return 3;
+
 }
 
 
-
+float centroid_distance_s(float* o_centroids, float* n_centroids, int k, int data_point_dim){
+    float distance = 0;
+    float diff;
+    for(int id = 0 ; id < k; id++){
+        for(int dim=0; dim < data_point_dim; dim++){
+            diff = o_centroids[id*data_point_dim+dim] - n_centroids[id*data_point_dim+dim];
+            distance += diff * diff;
+        }
+    }
+    return distance;
+}
 
 void kmeans_s(float* data_points, float* centroids, int* cluster_assignment, int num_data_points, int data_point_dim, int num_centroids, int max_iterations, float tolerance) {
 
     float* distances = new float[num_data_points * num_centroids];
-
+    float* old_centroids = new float[num_centroids * data_point_dim];
     // Initialize centroids randomly
     initialize_centroids(data_point_dim, centroids, data_points, num_centroids, 100);
 
 
     // Main loop
     int iteration = 0;
-    while (iteration < max_iterations) {
+     do {
 
-        std::cout << calculate_distance_s(data_points, centroids, distances, num_data_points, num_centroids, data_point_dim);
+        calculate_distance_s(data_points, centroids, distances, num_data_points, num_centroids, data_point_dim);
 
         // Assign each data point to the nearest centroid
-        std::cout << assign_cluster_s(cluster_assignment, distances, num_data_points, num_centroids);
+        assign_cluster_s(cluster_assignment, distances, num_data_points, num_centroids);
 
 
-        std::cout << calculate_centroid_s(data_points, cluster_assignment, centroids, num_data_points, num_centroids, data_point_dim);
+        calculate_centroid_s(data_points, cluster_assignment, centroids, old_centroids, num_data_points, num_centroids, data_point_dim);
 
         // Check if centroids have moved more than tolerance
-        // ...
+
         iteration++;
 
-    }
+    }while (iteration < max_iterations && centroid_distance_s(old_centroids, centroids, num_centroids, data_point_dim) > tolerance);
 
     delete[] distances;
 }
@@ -296,7 +330,7 @@ template <typename T> void saveArray (int num_points, int data_point_dim, T* arr
 int main() {
 //float data_points[] = {1.2,1.3,  5.3,5,5.2,5.1, 1.1,1};
 
-    const int num_points=100;  // number of experiments
+    const int num_points=100000;  // number of experiments
     const int data_point_dim = 2;
     const int k = 3;
     const float sigma = 5;
@@ -306,19 +340,22 @@ int main() {
     int* cluster_assignment = new int[num_points];
 
     generateCluster(num_points, data_point_dim, k, sigma, points, centroids);
-    //generatePoints(num_points, data_point_dim, points);
-//    for(int i=0; i<num_points; i++){
-//        for(int dim = 0; dim < data_point_dim; dim++){
-//            std::cout << points[i*data_point_dim+dim] << "   :   ";
-//        }
-//        std::cout << "\n";
-//    }
-
     saveArray(num_points, data_point_dim, points, "points.csv");
-    kmeans_s(points, centroids, cluster_assignment, num_points, data_point_dim, k, 20, 2);
-    kmeans(points, centroids, cluster_assignment, num_points, data_point_dim, k, 20, 2);
+
+
+    std::vector<std::chrono::nanoseconds> sequentialDuration;
+    std::vector<std::chrono::nanoseconds> parallelDuration;
+    auto begin = std::chrono::high_resolution_clock::now();
+    kmeans_s(points, centroids, cluster_assignment, num_points, data_point_dim, k, 200, sigma);
+    auto end = std::chrono::high_resolution_clock::now();
+    sequentialDuration.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin));
+    begin = std::chrono::high_resolution_clock::now();
+    kmeans(points, centroids, cluster_assignment, num_points, data_point_dim, k, 200, sigma);
+    end = std::chrono::high_resolution_clock::now();
+    parallelDuration.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin));
     saveArray(k, data_point_dim, centroids, "centroids.csv");
     saveArray(num_points, 1, cluster_assignment, "cluster_assignment.csv");
+    std::cout << sequentialDuration[0].count() << "   " << parallelDuration[0].count();
 
     delete[] centroids;
     delete[] points;
