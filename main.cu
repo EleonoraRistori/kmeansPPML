@@ -72,6 +72,7 @@ __global__ void centroid_distance(float* o_centroids, float* n_centroids, int k,
             diff = o_centroids[centroid_id*data_point_dim+dim] - n_centroids[centroid_id*data_point_dim+dim];
             distance[centroid_id] += diff * diff;
     }
+
 }
 
 
@@ -150,7 +151,9 @@ void kmeans(float* data_points, float* centroids, int* cluster_assignment, int n
         // Check if centroids have moved more than tolerance
         tot_distance = 0;
         centroid_distance<<<num_blocks, num_threads_per_block>>>(old_centroids, d_centroids, num_centroids, data_point_dim, d_centr_distance);
+
         cudaMemcpy(centr_distance, d_centr_distance, num_centroids*sizeof(float), cudaMemcpyDeviceToHost);
+
         for(int i=0; i<num_centroids; i++){
             tot_distance += centr_distance[i];
         }
@@ -166,6 +169,7 @@ void kmeans(float* data_points, float* centroids, int* cluster_assignment, int n
     cudaFree(d_centroids);
     cudaFree(d_distances);
     cudaFree(d_cluster_assignment);
+    cudaFree(d_centr_distance);
 
 }
 
@@ -252,7 +256,6 @@ void kmeans_s(float* data_points, float* centroids, int* cluster_assignment, int
 
         calculate_centroid_s(data_points, cluster_assignment, centroids, old_centroids, num_data_points, num_centroids, data_point_dim);
 
-        // Check if centroids have moved more than tolerance
 
         iteration++;
 
@@ -330,7 +333,7 @@ template <typename T> void saveArray (int num_points, int data_point_dim, T* arr
 int main() {
 //float data_points[] = {1.2,1.3,  5.3,5,5.2,5.1, 1.1,1};
 
-    const int num_points=100000;  // number of experiments
+    const int num_points=5000000;  // number of experiments
     const int data_point_dim = 2;
     const int k = 3;
     const float sigma = 5;
@@ -340,21 +343,23 @@ int main() {
     int* cluster_assignment = new int[num_points];
 
     generateCluster(num_points, data_point_dim, k, sigma, points, centroids);
-    saveArray(num_points, data_point_dim, points, "points.csv");
+    std::cout << "finito di generare i punti\n";
+    //saveArray(num_points, data_point_dim, points, "points.csv");
 
 
-    std::vector<std::chrono::nanoseconds> sequentialDuration;
-    std::vector<std::chrono::nanoseconds> parallelDuration;
+    std::vector<std::chrono::milliseconds> sequentialDuration;
+    std::vector<std::chrono::milliseconds> parallelDuration;
     auto begin = std::chrono::high_resolution_clock::now();
-    kmeans_s(points, centroids, cluster_assignment, num_points, data_point_dim, k, 200, sigma);
+    kmeans_s(points, centroids, cluster_assignment, num_points, data_point_dim, k, 2, sigma);
     auto end = std::chrono::high_resolution_clock::now();
-    sequentialDuration.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin));
+    sequentialDuration.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin));
+    std::cout << "finito sequenziale\n";
     begin = std::chrono::high_resolution_clock::now();
-    kmeans(points, centroids, cluster_assignment, num_points, data_point_dim, k, 200, sigma);
+    kmeans(points, centroids, cluster_assignment, num_points, data_point_dim, k, 2, sigma);
     end = std::chrono::high_resolution_clock::now();
-    parallelDuration.push_back(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin));
-    saveArray(k, data_point_dim, centroids, "centroids.csv");
-    saveArray(num_points, 1, cluster_assignment, "cluster_assignment.csv");
+    parallelDuration.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin));
+    //saveArray(k, data_point_dim, centroids, "centroids.csv");
+    //saveArray(num_points, 1, cluster_assignment, "cluster_assignment.csv");
     std::cout << sequentialDuration[0].count() << "   " << parallelDuration[0].count();
 
     delete[] centroids;
