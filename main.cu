@@ -5,7 +5,7 @@
 #include <fstream>
 #include <queue>
 #include <chrono>
-
+#include <cooperative_groups.h>
 
 __global__ void calculate_distance(float* data_points, float* centroids, float* distances, int num_data_points, int num_centroids, int data_point_dim) {
     int data_point_id = blockIdx.x * blockDim.x + threadIdx.x;
@@ -22,7 +22,8 @@ __global__ void calculate_distance(float* data_points, float* centroids, float* 
     }
 }
 
-__global__ void assign_cluster(int *cluster_assignment, const float* data_points, const float* centroids, int num_data_points, int num_centroids, int data_point_dim, float* updated_centroids, int* assigned_points) {
+__global__ void assign_cluster(int *cluster_assignment, const float* data_points, const float* centroids, int num_data_points,
+                               int num_centroids, int data_point_dim, float* updated_centroids, int* assigned_points) {
     int data_point_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (data_point_id >= num_data_points) {
         return;
@@ -48,7 +49,8 @@ __global__ void assign_cluster(int *cluster_assignment, const float* data_points
 
 }
 
-__global__ void calculate_centroid(float* updated_centroids, int* assigned_points, float* centroids, float* old_centroids, int num_data_points, int num_centroids, int data_point_dim) {
+__global__ void calculate_centroid(float* updated_centroids, int* assigned_points, float* centroids, float* old_centroids, int num_data_points,
+                                   int num_centroids, int data_point_dim) {
     int centroid_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (centroid_id >= num_centroids) {
         return;
@@ -77,7 +79,7 @@ __global__ void centroid_distance(float* o_centroids, float* n_centroids, int k,
 }
 
 
-void initialize_centroids(int data_point_dim, float* centroids, float *data_points, int k, float threshold){
+void initialize_centroids(int data_point_dim, float* centroids, const float *data_points, int k, float threshold){
     for(int dim=0; dim<data_point_dim; dim++){
         centroids[dim] = data_points[dim];
     }
@@ -151,15 +153,16 @@ int kmeans(float* data_points, float* centroids, int* cluster_assignment, int nu
         cudaMemset(&d_updated_centroid, 0, num_centroids*data_point_dim*sizeof(float));
         cudaMemset(&d_assigned_points, 0, num_centroids* sizeof(int));
         num_blocks = (num_data_points + num_threads_per_block - 1) / num_threads_per_block;
-        //calculate_distance<<<num_blocks, num_threads_per_block>>>(d_data_points, d_centroids, d_distances, num_data_points, num_centroids, data_point_dim);
 
         // Assign each data point to the nearest centroid
-        assign_cluster<<<num_blocks, num_threads_per_block>>>(d_cluster_assignment, d_data_points, d_centroids, num_data_points, num_centroids, data_point_dim, d_updated_centroid, d_assigned_points);
+        assign_cluster<<<num_blocks, num_threads_per_block>>>(d_cluster_assignment, d_data_points, d_centroids, num_data_points,
+                                                              num_centroids, data_point_dim, d_updated_centroid, d_assigned_points);
 
         // Calculate new centroids
         num_blocks = (num_centroids + num_threads_per_block - 1) / num_threads_per_block;
 
-        calculate_centroid<<<num_blocks, num_threads_per_block>>>(d_updated_centroid, d_assigned_points, d_centroids, old_centroids, num_data_points, num_centroids, data_point_dim);
+        calculate_centroid<<<num_blocks, num_threads_per_block>>>(d_updated_centroid, d_assigned_points, d_centroids, old_centroids,
+                                                                  num_data_points, num_centroids, data_point_dim);
 
         // Check if centroids have moved more than tolerance
         tot_distance = 0;
@@ -193,7 +196,8 @@ int kmeans(float* data_points, float* centroids, int* cluster_assignment, int nu
 
 
 
-void assign_cluster_s(int* cluster_assignment, float* data_points, float* centroids, int num_data_points, int num_centroids, int data_point_dim) {
+
+void assign_cluster_s(int* cluster_assignment, const float* data_points, float* centroids, int num_data_points, int num_centroids, int data_point_dim) {
     for(int data_point_id=0; data_point_id<num_data_points; data_point_id++){
         float min_dist = INFINITY;
         int min_centroid_id = -1;
@@ -212,7 +216,7 @@ void assign_cluster_s(int* cluster_assignment, float* data_points, float* centro
     }
 }
 
-void calculate_centroid_s(float* data_points, int* cluster_assignment, float* centroids, float* old_centroids, int num_data_points, int num_centroids, int data_point_dim) {
+void calculate_centroid_s(const float* data_points, const int* cluster_assignment, float* centroids, float* old_centroids, int num_data_points, int num_centroids, int data_point_dim) {
     for(int centroid_id=0; centroid_id<num_centroids; centroid_id++){
         for (int dim = 0; dim < data_point_dim; dim++) {
             int num_points_assigned = 0;
@@ -247,7 +251,6 @@ float centroid_distance_s(float* o_centroids, float* n_centroids, int k, int dat
 
 void kmeans_s(float* data_points, float* centroids, int* cluster_assignment, int num_data_points, int data_point_dim, int num_centroids, int max_iterations, float tolerance, float sigma) {
 
-    //float* distances = new float[num_data_points * num_centroids];
     float* old_centroids = new float[num_centroids * data_point_dim];
     // Initialize centroids randomly
     initialize_centroids(data_point_dim, centroids, data_points, num_centroids, sigma*sigma*100);
@@ -256,8 +259,6 @@ void kmeans_s(float* data_points, float* centroids, int* cluster_assignment, int
     // Main loop
     int iteration = 0;
      do {
-
-        //calculate_distance_s(data_points, centroids, distances, num_data_points, num_centroids, data_point_dim);
 
         // Assign each data point to the nearest centroid
         assign_cluster_s(cluster_assignment, data_points, centroids, num_data_points, num_centroids, data_point_dim);
@@ -270,7 +271,6 @@ void kmeans_s(float* data_points, float* centroids, int* cluster_assignment, int
 
     }while (iteration < max_iterations && centroid_distance_s(old_centroids, centroids, num_centroids, data_point_dim) > tolerance);
 
-    //delete[] distances;
     delete[] old_centroids;
 }
 
@@ -307,7 +307,7 @@ void generateCluster(int num_points,int data_point_dim, int k, float sigma, floa
                 sum_distances += diff*diff;
             }
             centroid_id++;
-        }while(centroid_id < num_assigned_centroids && sum_distances > sigma*sigma*100);
+        }while(centroid_id < num_assigned_centroids && sum_distances > sigma*sigma);
         if(centroid_id == num_assigned_centroids){
             num_assigned_centroids++;
         }
@@ -362,69 +362,69 @@ int main() {
     cluster_assignment = new int[num_points];
     centroids = new float[k*data_point_dim];
     generateCluster(num_points, data_point_dim, k, sigma, points, centroids);
-    kmeans(points, centroids, cluster_assignment, num_points, data_point_dim, k, 200, sigma, sigma);
-
-    //Test #points
-    centroids = new float[k*data_point_dim];
-
+    kmeans(points, centroids, cluster_assignment, num_points, data_point_dim, k, 20, sigma, sigma);
     int num_it = 0;
-    for(int i = 5; i <=200 ; i=i+5){
+    //Test #points
+//    centroids = new float[k*data_point_dim];
+//
+//
+//    for(int i = 125; i <=140  ; i=i+5){
+//        num_it++;
+//        num_points = i*1000000;
+//        points = new float[num_points*data_point_dim];
+//        cluster_assignment = new int[num_points];
+//        std::cout << i << "\n";
+//        generateCluster(num_points, data_point_dim, k, sigma, points, centroids);
+//        auto begin = std::chrono::high_resolution_clock::now();
+//        //kmeans_s(points, centroids, cluster_assignment, num_points, data_point_dim, k, 3, sigma, sigma);
+//        auto end = std::chrono::high_resolution_clock::now();
+//        sequentialDuration.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin));
+//        begin = std::chrono::high_resolution_clock::now();
+//        if(kmeans(points, centroids, cluster_assignment, num_points, data_point_dim, k, 20, sigma, sigma) == -1)
+//            return -1;
+//        end = std::chrono::high_resolution_clock::now();
+//        parallelDuration.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin));
+//        saveArray(num_points, data_point_dim, points, "points.csv");
+//        saveArray(num_points, 1, cluster_assignment, "cluster_assignment.csv");
+//        saveArray(k, data_point_dim, centroids, "centroids.csv");
+//        std::cout << sequentialDuration[num_it-1].count() << "\n";
+//        std::cout << parallelDuration[num_it-1].count() << "\n";
+//        delete[] points;
+//        delete[] cluster_assignment;
+//
+//    }
+//    delete[] centroids;
+//    //saveTime(num_it, sequentialDuration, "time_n_points.csv");
+//    saveTime(num_it, parallelDuration, "p_time_n_points.csv");
+//
+//    sequentialDuration.clear();
+//    parallelDuration.clear();
+
+
+
+    //Test #cluster
+    for(k = 2; k <= 20; k++){
         num_it++;
-        num_points = i*1000000;
         points = new float[num_points*data_point_dim];
         cluster_assignment = new int[num_points];
-        std::cout << i << "\n";
+        centroids = new float[k*data_point_dim];
+        std::cout << k;
         generateCluster(num_points, data_point_dim, k, sigma, points, centroids);
         auto begin = std::chrono::high_resolution_clock::now();
         kmeans_s(points, centroids, cluster_assignment, num_points, data_point_dim, k, 20, sigma, sigma);
         auto end = std::chrono::high_resolution_clock::now();
         sequentialDuration.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin));
         begin = std::chrono::high_resolution_clock::now();
-        if(kmeans(points, centroids, cluster_assignment, num_points, data_point_dim, k, 200, sigma, sigma) == -1)
-            return -1;
+        kmeans(points, centroids, cluster_assignment, num_points, data_point_dim, k, 20, sigma, sigma);
         end = std::chrono::high_resolution_clock::now();
         parallelDuration.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin));
-        //saveArray(num_points, data_point_dim, points, "points.csv");
-        //saveArray(num_points, 1, cluster_assignment, "cluster_assignment.csv");
-        //saveArray(k, data_point_dim, centroids, "centroids.csv");
-        std::cout << sequentialDuration[num_it-1].count() << "\n";
-        std::cout << parallelDuration[num_it-1].count() << "\n";
+        std::cout << k;
         delete[] points;
         delete[] cluster_assignment;
+        delete[] centroids;
 
     }
-    delete[] centroids;
-    saveTime(num_it, sequentialDuration, "time_n_points.csv");
-    saveTime(num_it, parallelDuration, "p_time_n_points.csv");
-
-    sequentialDuration.clear();
-    parallelDuration.clear();
-
-
-
-//    //Test #cluster
-//    for(k = 2; k <= 20; k++){
-//        num_it++;
-//        points = new float[num_points*data_point_dim];
-//        cluster_assignment = new int[num_points];
-//        centroids = new float[k*data_point_dim];
-//        std::cout << k;
-//        generateCluster(num_points, data_point_dim, k, sigma, points, centroids);
-//        auto begin = std::chrono::high_resolution_clock::now();
-//        kmeans_s(points, centroids, cluster_assignment, num_points, data_point_dim, k, 20, sigma);
-//        auto end = std::chrono::high_resolution_clock::now();
-//        sequentialDuration.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin));
-//        begin = std::chrono::high_resolution_clock::now();
-//        kmeans(points, centroids, cluster_assignment, num_points, data_point_dim, k, 20, sigma);
-//        end = std::chrono::high_resolution_clock::now();
-//        parallelDuration.push_back(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin));
-//        std::cout << k;
-//        delete[] points;
-//        delete[] cluster_assignment;
-//        delete[] centroids;
-//
-//    }
-//    saveTime(19, sequentialDuration, "time_n_centroids.csv");
-//    saveTime(19, parallelDuration, "p_time_n_centroids.csv");
+    saveTime(19, sequentialDuration, "time_n_centroids.csv");
+    saveTime(19, parallelDuration, "p_time_n_centroids.csv");
     return 0;
 }
