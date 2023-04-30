@@ -49,7 +49,7 @@ __global__ void assign_cluster(int *cluster_assignment, const float* data_points
 
 }
 
-__global__ void calculate_centroid(float* updated_centroids, int* assigned_points, float* centroids, float* old_centroids, int num_data_points,
+__global__ void calculate_centroid(float* updated_centroids, int* assigned_points, float* centroids, float* old_centroids,
                                    int num_centroids, int data_point_dim) {
     int centroid_id = blockIdx.x * blockDim.x + threadIdx.x;
     if (centroid_id >= num_centroids) {
@@ -162,7 +162,7 @@ int kmeans(float* data_points, float* centroids, int* cluster_assignment, int nu
         num_blocks = (num_centroids + num_threads_per_block - 1) / num_threads_per_block;
 
         calculate_centroid<<<num_blocks, num_threads_per_block>>>(d_updated_centroid, d_assigned_points, d_centroids, old_centroids,
-                                                                  num_data_points, num_centroids, data_point_dim);
+                                                                  num_centroids, data_point_dim);
 
         // Check if centroids have moved more than tolerance
         tot_distance = 0;
