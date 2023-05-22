@@ -164,17 +164,17 @@ int kmeans(float* data_points, float* centroids, int* cluster_assignment, int nu
         calculate_centroid<<<num_blocks, num_threads_per_block>>>(d_updated_centroid, d_assigned_points, d_centroids, old_centroids,
                                                                   num_centroids, data_point_dim);
 
-        // Check if centroids have moved more than tolerance
-        tot_distance = 0;
-        centroid_distance<<<num_blocks, num_threads_per_block>>>(old_centroids, d_centroids, num_centroids, data_point_dim, d_centr_distance);
-
-        cudaMemcpy(centr_distance, d_centr_distance, num_centroids*sizeof(float), cudaMemcpyDeviceToHost);
-
-        for(int i=0; i<num_centroids; i++){
-            tot_distance += centr_distance[i];
-        }
+//        // Check if centroids have moved more than tolerance
+//        tot_distance = 0;
+//        centroid_distance<<<num_blocks, num_threads_per_block>>>(old_centroids, d_centroids, num_centroids, data_point_dim, d_centr_distance);
+//
+//        cudaMemcpy(centr_distance, d_centr_distance, num_centroids*sizeof(float), cudaMemcpyDeviceToHost);
+//
+//        for(int i=0; i<num_centroids; i++){
+//            tot_distance += centr_distance[i];
+//        }
         iteration++;
-    }while (iteration < max_iterations && tot_distance > tolerance);
+    }while (iteration < max_iterations /*&& tot_distance > tolerance*/);
 
     // Copy final centroids and cluster assignment back to CPU
     cudaMemcpy(centroids, d_centroids, num_centroids * data_point_dim * sizeof(float), cudaMemcpyDeviceToHost);

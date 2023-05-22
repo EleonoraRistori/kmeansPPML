@@ -78,7 +78,7 @@ void kmeans_s(float* data_points, float* centroids, int* cluster_assignment, int
 
         iteration++;
 
-    }while (iteration < max_iterations && centroid_distance_s(old_centroids, centroids, num_centroids, data_point_dim) > tolerance);
+    }while (iteration < max_iterations /*&& centroid_distance_s(old_centroids, centroids, num_centroids, data_point_dim) > tolerance*/);
 
     delete[] old_centroids;
 }
